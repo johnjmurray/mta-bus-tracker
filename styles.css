@@ -1,0 +1,20 @@
+/* styles.css - simple layout */
+:root{
+  --gap:12px;
+  --muted:#666;
+}
+body{font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;padding:18px;background:#f7f9fb;color:#0b1220}
+header h1{margin:0}
+.lead{margin:6px 0 18px;color:var(--muted)}
+#controls{background:#fff;border:1px solid #e1e6ee;padding:12px;border-radius:8px;box-shadow:0 1px 2px rgba(11,18,32,0.03)}
+.row{display:flex;gap:var(--gap);align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.row label{min-width:140px}
+.row input[type=text],.row input[type=password],.row select{flex:1;min-width:180px;padding:8px;border:1px solid #d3dbe6;border-radius:6px}
+.row button{padding:8px 12px;border-radius:6px;border:1px solid #c7d0da;background:#fff;cursor:pointer}
+.inline{display:flex;align-items:center;gap:8px}
+.meta{font-size:13px;color:var(--muted);justify-content:space-between}
+#error{color:#b00020;margin-top:8px}
+#map-wrap{margin-top:12px}
+#map{height:640px;border-radius:8px;border:1px solid #e1e6ee}
+footer{margin-top:12px;color:var(--muted);font-size:13px}
+@media (max-width:700px){.row label{min-width:120px}}

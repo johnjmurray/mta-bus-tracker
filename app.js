@@ -1,119 +1,183 @@
-// Browser-only app.js (no ES module imports)
-// Reads GTFS_RT_KEY from window.GTFS_RT_KEY
-const GTFS_RT_KEY = window.GTFS_RT_KEY || "REPLACE_WITH_YOUR_KEY";
+// app.js (module) - Browser-friendly webapp for MTA GTFS-RT vehicle positions
+// Uses Leaflet and protobufjs (loaded from CDN in index.html)
 
-// MTA vehicle positions API
-const VEH_URL =
-  `https://gtfsrt.prod.obanyc.com/vehiclePositions?key=${GTFS_RT_KEY}`;
+const PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/gtfs-realtime/proto/gtfs-realtime.proto';
+const DEFAULT_REFRESH_MS = 20000;
 
-// Ensure DOM is ready - scripts are loaded at end of body, so elements exist
-let map = L.map("map").setView([40.7128, -74.0060], 12);
+// DOM
+const el = {
+  apiKey: document.getElementById('apiKey'),
+  saveKey: document.getElementById('saveKey'),
+  clearKey: document.getElementById('clearKey'),
+  mode: document.getElementById('mode'),
+  query: document.getElementById('query'),
+  trackBtn: document.getElementById('track'),
+  auto: document.getElementById('auto'),
+  status: document.getElementById('status'),
+  last: document.getElementById('last'),
+  error: document.getElementById('error')
+};
 
-// Add base map
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19
-}).addTo(map);
+let map, markers = {}, rootPromise, intervalId = null;
 
-let markers = {}; // store markers by vehicle ID
+function setStatus(s){ el.status.textContent = s; }
+function setError(msg){ el.error.textContent = msg || ''; }
+function setLast(ts){ el.last.textContent = ts ? `Last update: ${new Date(ts).toLocaleTimeString()}` : 'Last update: never'; }
 
-// Load protobuf parser (uses global `protobuf` from protobufjs)
-async function loadProto() {
-  if (!window.protobuf) throw new Error("protobufjs (protobuf) is not loaded");
-  const response = await fetch("gtfs-realtime.proto");
-  const protoText = await response.text();
-  return protobuf.parse(protoText).root;
+function saveKeyToStorage(key){ if(!key) { localStorage.removeItem('gtfs_key'); return; } localStorage.setItem('gtfs_key', key); }
+function loadKeyFromStorage(){ return localStorage.getItem('gtfs_key') || ''; }
+
+function getApiKey(){ return el.apiKey.value.trim() || loadKeyFromStorage(); }
+
+async function loadProto(){
+  if(window.protobuf && window.protobuf.parse) {
+    const resp = await fetch(PROTO_URL);
+    if(!resp.ok) throw new Error(`Failed to load proto: ${resp.status}`);
+    const protoText = await resp.text();
+    return protobuf.parse(protoText).root;
+  }
+  throw new Error('protobufjs not loaded');
 }
 
-const rootPromise = loadProto();
+async function init(){
+  // initialize map
+  map = L.map('map', {preferCanvas:true}).setView([40.7128, -74.0060], 12);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-async function getFeed() {
-  const resp = await fetch(VEH_URL);
-  if (!resp.ok) throw new Error(`Feed fetch failed: ${resp.status}`);
-  const buf = await resp.arrayBuffer();
-
-  const root = await rootPromise;
-  const FeedMessage = root.lookupType("transit_realtime.FeedMessage");
-
-  const message = FeedMessage.decode(new Uint8Array(buf));
-  return FeedMessage.toObject(message);
-}
-
-function updateMap(matches) {
-  // Remove markers for buses no longer present
-  for (const id in markers) {
-    if (!matches.find(m => m.id === id)) {
-      map.removeLayer(markers[id]);
-      delete markers[id];
-    }
+  // load proto
+  setStatus('Loading proto...');
+  rootPromise = loadProto();
+  try{
+    await rootPromise;
+    setStatus('Proto loaded. Ready');
+  }catch(err){
+    setError(err.message);
+    setStatus('Error loading proto');
+    console.error(err);
   }
 
-  // Add/update markers
-  matches.forEach(m => {
-    const lat = m.lat;
-    const lon = m.lon;
-
-    if (lat == null || lon == null) return; // skip incomplete positions
-
-    if (!markers[m.id]) {
-      markers[m.id] = L.marker([lat, lon]).addTo(map);
-    } else {
-      markers[m.id].setLatLng([lat, lon]);
-    }
-
-    markers[m.id].bindPopup(
-      `Vehicle ${m.id}<br>
-       Route: ${m.route || "N/A"}<br>
-       Trip: ${m.trip || "N/A"}<br>
-       Updated: ${m.timestamp ? new Date(m.timestamp * 1000).toLocaleTimeString() : "N/A"}`
-    );
+  // wire events
+  el.saveKey.addEventListener('click', ()=>{
+    const k = el.apiKey.value.trim();
+    if(!k){ setError('API key is empty'); return; }
+    saveKeyToStorage(k);
+    setError('');
+    setStatus('API key saved');
   });
+
+  el.clearKey.addEventListener('click', ()=>{
+    saveKeyToStorage('');
+    el.apiKey.value = '';
+    setStatus('Saved key cleared');
+  });
+
+  el.trackBtn.addEventListener('click', ()=>{ runOnce(); });
+
+  el.auto.addEventListener('change', ()=>{
+    if(el.auto.checked) startAuto(); else stopAuto();
+  });
+
+  // load saved key into field (masked)
+  const saved = loadKeyFromStorage();
+  if(saved) el.apiKey.value = saved;
 }
 
-async function track() {
-  try {
-    const vehInput = document.getElementById("veh").value.trim();
-    if (!vehInput) return;
+function buildFeedUrl(key){
+  if(!key) throw new Error('No API key provided');
+  return `https://gtfsrt.prod.obanyc.com/vehiclePositions?key=${encodeURIComponent(key)}`;
+}
 
-    const userVehicles = vehInput.split(",")
-      .map(v => v.trim())
-      .filter(v => v.length > 0);
+async function fetchFeed(key){
+  const url = buildFeedUrl(key);
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error(`Feed fetch failed: ${resp.status}`);
+  const buf = await resp.arrayBuffer();
+  return new Uint8Array(buf);
+}
 
-    const feed = await getFeed();
-    if (!feed || !feed.entity) return;
+async function parseFeed(bytes){
+  const root = await rootPromise;
+  const FeedMessage = root.lookupType('transit_realtime.FeedMessage');
+  const decoded = FeedMessage.decode(bytes);
+  const obj = FeedMessage.toObject(decoded, { longs: Number, enums: String, defaults: false, arrays: true, objects: true });
+  return obj;
+}
+
+function clearMarkersNotIn(ids){
+  for(const id in markers){ if(!ids.has(id)){ map.removeLayer(markers[id]); delete markers[id]; } }
+}
+
+function updateMarkers(matches){
+  const present = new Set();
+  matches.forEach(m=>{
+    if(m.lat == null || m.lon == null) return;
+    present.add(m.id);
+    if(!markers[m.id]) markers[m.id] = L.marker([m.lat,m.lon]).addTo(map);
+    else markers[m.id].setLatLng([m.lat,m.lon]);
+
+    markers[m.id].bindPopup(`<b>Vehicle ${m.id}</b><br/>Route: ${m.route||'N/A'}<br/>Trip: ${m.trip||'N/A'}<br/>Updated: ${m.timestamp?new Date(m.timestamp*1000).toLocaleTimeString():'N/A'}`);
+  });
+  clearMarkersNotIn(present);
+}
+
+async function runOnce(){
+  setError('');
+  setStatus('Fetching feed...');
+  const key = getApiKey();
+  if(!key){ setError('Missing API key. Enter it above or save it.'); setStatus('No API key'); return; }
+
+  try{
+    const bytes = await fetchFeed(key);
+    const feedObj = await parseFeed(bytes);
+
+    const mode = el.mode.value;
+    const q = el.query.value.trim();
+    const userVehicles = mode === 'vehicle' ? q.split(',').map(x=>x.trim()).filter(x=>x.length>0) : null;
 
     const matches = [];
+    if(feedObj && Array.isArray(feedObj.entity)){
+      feedObj.entity.forEach(ent => {
+        const v = ent.vehicle || ent.vehicle_position || ent.vehiclePosition || ent.vehicle || null;
+        // support both shapes: ent.vehicle.vehicle.id or ent.vehicle.vehicle.label
+        if(!ent.vehicle) return;
+        const veh = ent.vehicle.vehicle || ent.vehicle.vehicle || ent.vehicle;
+        const id = ent.vehicle?.vehicle?.id || ent.vehicle?.vehicle?.label || ent.id || (veh && veh.id) || null;
+        const lat = ent.vehicle?.position?.latitude ?? ent.vehicle?.position?.lat ?? null;
+        const lon = ent.vehicle?.position?.longitude ?? ent.vehicle?.position?.lon ?? null;
+        const route = ent.vehicle?.trip?.routeId || ent.vehicle?.trip?.route || null;
+        const trip = ent.vehicle?.trip?.tripId || ent.vehicle?.trip?.trip || null;
+        const timestamp = ent.vehicle?.timestamp || ent.vehicle?.current_stop_sequence || null;
 
-    feed.entity.forEach(e => {
-      if (e.vehicle && e.vehicle.vehicle) {
-        const id = e.vehicle.vehicle.id;
+        if(!id) return;
 
-        if (userVehicles.includes(id)) {
-          matches.push({
-            id,
-            lat: e.vehicle.position?.latitude,
-            lon: e.vehicle.position?.longitude,
-            route: e.vehicle.trip?.routeId,
-            trip: e.vehicle.trip?.tripId,
-            timestamp: e.vehicle.timestamp
-          });
+        if(mode === 'vehicle'){
+          if(userVehicles && userVehicles.includes(String(id))) matches.push({id:String(id),lat,lon,route,trip,timestamp});
+        }else{
+          // route mode: match by route id (case-insensitive)
+          if(q && route && String(route).toLowerCase() === q.toLowerCase()) matches.push({id:String(id),lat,lon,route,trip,timestamp});
         }
-      }
-    });
+      });
+    }
 
-    updateMap(matches);
-  } catch (err) {
-    console.error("track() error:", err);
-    alert("Error fetching vehicle feed: " + err.message);
+    updateMarkers(matches);
+    setStatus(`Found ${matches.length} matching vehicle(s)`);
+    setLast(Date.now());
+  }catch(err){
+    console.error(err);
+    setError(err.message);
+    setStatus('Error');
   }
 }
 
-// Expose track to the global scope so inline onclick handlers work
-window.track = track;
+function startAuto(){
+  if(intervalId) return;
+  runOnce();
+  intervalId = setInterval(runOnce, DEFAULT_REFRESH_MS);
+  setStatus('Auto-refresh started');
+}
+function stopAuto(){ if(intervalId){ clearInterval(intervalId); intervalId = null; setStatus('Auto-refresh stopped'); } }
 
-setInterval(() => {
-  try {
-    if (document.getElementById("auto").checked) track();
-  } catch (e) {
-    // ignore if elements aren't present
-  }
-}, 20000);
+function setLast(ts){ document.getElementById('last').textContent = ts ? `Last update: ${new Date(ts).toLocaleTimeString()}` : 'Last update: never'; }
+
+// initialize app on DOM ready
+window.addEventListener('DOMContentLoaded', ()=>{ init(); });

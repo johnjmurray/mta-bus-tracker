@@ -1,30 +1,65 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>NYC Bus Tracker</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MTA Bus Tracker</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-  <style>
-    body { font-family: sans-serif; }
-    #map { height: 600px; width: 100%; margin-top: 10px; }
-  </style>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <header>
+    <h1>MTA Bus Tracker</h1>
+    <p class="lead">Track NYC buses using MTA GTFS-RT vehicle positions. Enter a GTFS-RT API key, then search by vehicle ID(s) or route.</p>
+  </header>
 
-<h1>MTA Bus Tracker</h1>
+  <main>
+    <section id="controls">
+      <div class="row">
+        <label for="apiKey">GTFS-RT API Key</label>
+        <input id="apiKey" type="password" placeholder="Enter GTFS-RT key (or leave blank to use saved)" />
+        <button id="saveKey">Save key</button>
+        <button id="clearKey">Clear saved key</button>
+      </div>
 
-<label for="veh">Vehicle IDs (comma separated):</label>
-<input id="veh" placeholder="Example: 7560, 4321, 8884" size="40" />
-<button type="button" onclick="track()">Track</button>
+      <div class="row">
+        <label for="mode">Search mode</label>
+        <select id="mode">
+          <option value="vehicle">Vehicle IDs (comma separated)</option>
+          <option value="route">Route ID</option>
+        </select>
 
-<label><input type="checkbox" id="auto" /> Auto-refresh every 20s</label>
+        <label for="query">Vehicle IDs or Route</label>
+        <input id="query" placeholder="e.g. 7560,4321 or B41" />
 
-<div id="map"></div>
+        <button id="track">Track</button>
 
-<script src="app.js"></script>
+        <label class="inline"><input id="auto" type="checkbox" /> Auto-refresh (20s)</label>
+      </div>
 
+      <div class="row meta">
+        <div id="status">Ready</div>
+        <div id="last">Last update: never</div>
+      </div>
+
+      <div id="error" role="alert" aria-live="assertive"></div>
+    </section>
+
+    <section id="map-wrap">
+      <div id="map"></div>
+    </section>
+  </main>
+
+  <footer>
+    <small>Note: Serve this app over HTTP(S). Fetching GTFS-RT feeds and the proto file won't work from file://</small>
+  </footer>
+
+  <!-- Libraries -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/protobufjs/dist/protobuf.min.js"></script>
+
+  <!-- App -->
+  <script type="module" src="app.js"></script>
 </body>
 </html>
