@@ -1,10 +1,9 @@
-const PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/gtfs-realtime/proto/gtfs-realtime.proto';
+const DEFAULT_KEY = 'Bus_Infrastructure_Mapping';
 const DEFAULT_REFRESH_MS = 20000;
 
 const state = {
   map: null,
   markers: {},
-  rootPromise: null,
   intervalId: null,
   activeRouteFilter: null,
   latestMatches: [],
@@ -37,15 +36,11 @@ function setError(message) {
 }
 
 function getApiKey() {
-  return (els.apiKey.value || localStorage.getItem('gtfs_rt_key') || '').trim();
+  return (els.apiKey.value || localStorage.getItem('gtfs_rt_key') || DEFAULT_KEY).trim() || DEFAULT_KEY;
 }
 
 function saveKeyToLocalStorage() {
-  const key = (els.apiKey.value || '').trim();
-  if (!key) {
-    setError('Enter a GTFS-RT key first.');
-    return;
-  }
+  const key = (els.apiKey.value || '').trim() || DEFAULT_KEY;
   localStorage.setItem('gtfs_rt_key', key);
   setError('');
   setStatus('API key saved');
@@ -76,20 +71,6 @@ function updateModeLabel() {
   const isVehicleMode = els.mode.value === 'vehicle';
   els.queryLabel.textContent = isVehicleMode ? 'Vehicle IDs' : 'Route ID';
   els.query.placeholder = isVehicleMode ? 'e.g. 7560, 4321' : 'e.g. B41';
-}
-
-async function loadProto() {
-  if (!window.protobuf || !window.protobuf.parse) {
-    throw new Error('protobufjs failed to load');
-  }
-
-  const response = await fetch(PROTO_URL);
-  if (!response.ok) {
-    throw new Error(`Proto load failed: ${response.status}`);
-  }
-
-  const protoText = await response.text();
-  return window.protobuf.parse(protoText).root;
 }
 
 function initLeafletMap() {
@@ -193,52 +174,91 @@ function updateMap(matches) {
   clearMarkersNotIn(present);
 }
 
-async function fetchFeed(key) {
-  const response = await fetch(`https://gtfsrt.prod.obanyc.com/vehiclePositions?key=${encodeURIComponent(key)}`);
+async function fetchVehicleMonitoring(key, mode, userInput) {
+  const baseUrl = 'https://bustime-classic.mta.info/api/siri/vehicle-monitoring.json';
+
+  if (mode === 'vehicle') {
+    const vehicleIds = userInput
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    if (!vehicleIds.length) {
+      return [];
+    }
+
+    const requests = vehicleIds.map((vehicleId) => {
+      const url = new URL(baseUrl);
+      url.searchParams.set('key', key);
+      url.searchParams.set('VehicleRef', vehicleId);
+      return fetch(url.toString(), {
+        headers: {
+          Accept: 'application/json'
+        }
+      });
+    });
+
+    const responses = await Promise.all(requests);
+    const badResponse = responses.find((response) => !response.ok);
+    if (badResponse) {
+      throw new Error(`Feed fetch failed: ${badResponse.status}`);
+    }
+
+    return Promise.all(responses.map((response) => response.json()));
+  }
+
+  const routeInput = userInput.trim();
+  if (!routeInput) {
+    return [];
+  }
+
+  const url = new URL(baseUrl);
+  url.searchParams.set('key', key);
+  url.searchParams.set('LineRef', routeInput);
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+
   if (!response.ok) {
     throw new Error(`Feed fetch failed: ${response.status}`);
   }
-  return new Uint8Array(await response.arrayBuffer());
+
+  return [await response.json()];
 }
 
-async function parseFeed(bytes) {
-  if (!state.rootPromise) {
-    throw new Error('Proto not loaded');
-  }
-
-  const root = await state.rootPromise;
-  const FeedMessage = root.lookupType('transit_realtime.FeedMessage');
-  const decoded = FeedMessage.decode(bytes);
-  return FeedMessage.toObject(decoded, {
-    longs: Number,
-    enums: String,
-    defaults: false,
-    arrays: true,
-    objects: true
-  });
+function getVehicleActivityEntries(payload) {
+  return (
+    payload?.Siri?.ServiceDelivery?.VehicleMonitoringDelivery?.flatMap(
+      (delivery) => delivery?.VehicleActivity || []
+    ) || []
+  );
 }
 
-function normalizeMatches(feedObj, mode, userInput) {
-  if (!feedObj || !Array.isArray(feedObj.entity)) return [];
+function normalizeMatches(feedResponses, mode, userInput) {
+  const entries = feedResponses.flatMap((payload) => getVehicleActivityEntries(payload));
+  if (!entries.length) return [];
 
   const userVehicles = mode === 'vehicle'
-    ? userInput.split(',').map((v) => v.trim()).filter(Boolean)
+    ? userInput.split(',').map((value) => value.trim()).filter(Boolean).map(String)
     : [];
 
   const matches = [];
 
-  feedObj.entity.forEach((entity) => {
-    if (!entity || !entity.vehicle || !entity.vehicle.vehicle) return;
+  entries.forEach((entry) => {
+    if (!entry) return;
 
-    const vehicle = entity.vehicle;
-    const id = vehicle.vehicle.id;
+    const journey = entry.MonitoredVehicleJourney || {};
+    const id = journey.VehicleRef || null;
     if (!id) return;
 
-    const route = vehicle.trip && (vehicle.trip.routeId || vehicle.trip.route);
-    const trip = vehicle.trip && (vehicle.trip.tripId || vehicle.trip.trip);
-    const lat = vehicle.position && (vehicle.position.latitude ?? vehicle.position.lat ?? null);
-    const lon = vehicle.position && (vehicle.position.longitude ?? vehicle.position.lon ?? null);
-    const timestamp = vehicle.timestamp || null;
+    const route = journey.PublishedLineName || journey.LineRef || null;
+    const trip = journey.DatedVehicleJourneyRef || journey.JourneyPatternRef || null;
+    const lat = journey.VehicleLocation && (journey.VehicleLocation.Latitude ?? journey.VehicleLocation.latitude ?? null);
+    const lon = journey.VehicleLocation && (journey.VehicleLocation.Longitude ?? journey.VehicleLocation.longitude ?? null);
+    const timestamp = entry.RecordedAtTime ? new Date(entry.RecordedAtTime).getTime() / 1000 : null;
 
     if (mode === 'vehicle') {
       if (!userVehicles.includes(String(id))) return;
@@ -265,16 +285,9 @@ async function runOnce() {
   setStatus('Fetching feed...');
 
   const key = getApiKey();
-  if (!key) {
-    setError('Missing API key. Add one above or save it.');
-    setStatus('No API key');
-    return;
-  }
-
   try {
-    const bytes = await fetchFeed(key);
-    const feedObj = await parseFeed(bytes);
-    const matches = normalizeMatches(feedObj, els.mode.value, els.query.value);
+    const payloads = await fetchVehicleMonitoring(key, els.mode.value, els.query.value);
+    const matches = normalizeMatches(payloads, els.mode.value, els.query.value);
 
     state.latestMatches = matches;
     renderRouteList(matches);
@@ -309,13 +322,9 @@ function init() {
   const savedKey = localStorage.getItem('gtfs_rt_key') || '';
   if (savedKey) {
     els.apiKey.value = savedKey;
+  } else {
+    els.apiKey.value = DEFAULT_KEY;
   }
-
-  state.rootPromise = loadProto().catch((error) => {
-    setError(error.message);
-    setStatus('Proto load failed');
-    throw error;
-  });
 
   updateModeLabel();
   els.mode.addEventListener('change', updateModeLabel);
@@ -336,11 +345,7 @@ function init() {
     }
   });
 
-  state.rootPromise.then(() => {
-    setStatus('Ready');
-  }).catch(() => {
-    // handled above
-  });
+  setStatus('Ready');
 }
 
 window.addEventListener('DOMContentLoaded', init);
