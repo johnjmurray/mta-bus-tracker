@@ -1,183 +1,346 @@
-// app.js (module) - Browser-friendly webapp for MTA GTFS-RT vehicle positions
-// Uses Leaflet and protobufjs (loaded from CDN in index.html)
-
 const PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/gtfs-realtime/proto/gtfs-realtime.proto';
 const DEFAULT_REFRESH_MS = 20000;
 
-// DOM
-const el = {
+const state = {
+  map: null,
+  markers: {},
+  rootPromise: null,
+  intervalId: null,
+  activeRouteFilter: null,
+  latestMatches: [],
+  routeColorCache: new Map()
+};
+
+const els = {
   apiKey: document.getElementById('apiKey'),
   saveKey: document.getElementById('saveKey'),
   clearKey: document.getElementById('clearKey'),
   mode: document.getElementById('mode'),
   query: document.getElementById('query'),
+  queryLabel: document.getElementById('queryLabel'),
   trackBtn: document.getElementById('track'),
   auto: document.getElementById('auto'),
   status: document.getElementById('status'),
   last: document.getElementById('last'),
-  error: document.getElementById('error')
+  error: document.getElementById('error'),
+  routeList: document.getElementById('routeList'),
+  routeLegend: document.getElementById('routeLegend'),
+  clearRouteFilter: document.getElementById('clearRouteFilter')
 };
 
-let map, markers = {}, rootPromise, intervalId = null;
+function setStatus(message) {
+  els.status.textContent = message;
+}
 
-function setStatus(s){ el.status.textContent = s; }
-function setError(msg){ el.error.textContent = msg || ''; }
-function setLast(ts){ el.last.textContent = ts ? `Last update: ${new Date(ts).toLocaleTimeString()}` : 'Last update: never'; }
+function setError(message) {
+  els.error.textContent = message || '';
+}
 
-function saveKeyToStorage(key){ if(!key) { localStorage.removeItem('gtfs_key'); return; } localStorage.setItem('gtfs_key', key); }
-function loadKeyFromStorage(){ return localStorage.getItem('gtfs_key') || ''; }
+function getApiKey() {
+  return (els.apiKey.value || localStorage.getItem('gtfs_rt_key') || '').trim();
+}
 
-function getApiKey(){ return el.apiKey.value.trim() || loadKeyFromStorage(); }
-
-async function loadProto(){
-  if(window.protobuf && window.protobuf.parse) {
-    const resp = await fetch(PROTO_URL);
-    if(!resp.ok) throw new Error(`Failed to load proto: ${resp.status}`);
-    const protoText = await resp.text();
-    return protobuf.parse(protoText).root;
+function saveKeyToLocalStorage() {
+  const key = (els.apiKey.value || '').trim();
+  if (!key) {
+    setError('Enter a GTFS-RT key first.');
+    return;
   }
-  throw new Error('protobufjs not loaded');
+  localStorage.setItem('gtfs_rt_key', key);
+  setError('');
+  setStatus('API key saved');
 }
 
-async function init(){
-  // initialize map
-  map = L.map('map', {preferCanvas:true}).setView([40.7128, -74.0060], 12);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+function clearSavedKey() {
+  localStorage.removeItem('gtfs_rt_key');
+  els.apiKey.value = '';
+  setError('');
+  setStatus('Saved key cleared');
+}
 
-  // load proto
-  setStatus('Loading proto...');
-  rootPromise = loadProto();
-  try{
-    await rootPromise;
-    setStatus('Proto loaded. Ready');
-  }catch(err){
-    setError(err.message);
-    setStatus('Error loading proto');
-    console.error(err);
+function routeColor(route) {
+  if (!route) return '#6b7280';
+  if (state.routeColorCache.has(route)) return state.routeColorCache.get(route);
+
+  let hash = 0;
+  for (let i = 0; i < route.length; i += 1) {
+    hash = route.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash) % 360;
+  const color = `hsl(${hue} 72% 52%)`;
+  state.routeColorCache.set(route, color);
+  return color;
+}
+
+function updateModeLabel() {
+  const isVehicleMode = els.mode.value === 'vehicle';
+  els.queryLabel.textContent = isVehicleMode ? 'Vehicle IDs' : 'Route ID';
+  els.query.placeholder = isVehicleMode ? 'e.g. 7560, 4321' : 'e.g. B41';
+}
+
+async function loadProto() {
+  if (!window.protobuf || !window.protobuf.parse) {
+    throw new Error('protobufjs failed to load');
   }
 
-  // wire events
-  el.saveKey.addEventListener('click', ()=>{
-    const k = el.apiKey.value.trim();
-    if(!k){ setError('API key is empty'); return; }
-    saveKeyToStorage(k);
-    setError('');
-    setStatus('API key saved');
+  const response = await fetch(PROTO_URL);
+  if (!response.ok) {
+    throw new Error(`Proto load failed: ${response.status}`);
+  }
+
+  const protoText = await response.text();
+  return window.protobuf.parse(protoText).root;
+}
+
+function initLeafletMap() {
+  state.map = L.map('map', { preferCanvas: true }).setView([40.7128, -74.006], 12);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(state.map);
+}
+
+function renderRouteList(matches) {
+  const routeCounts = new Map();
+  matches.forEach((match) => {
+    if (!match.route) return;
+    const normalized = String(match.route);
+    routeCounts.set(normalized, (routeCounts.get(normalized) || 0) + 1);
   });
 
-  el.clearKey.addEventListener('click', ()=>{
-    saveKeyToStorage('');
-    el.apiKey.value = '';
-    setStatus('Saved key cleared');
+  const sortedRoutes = [...routeCounts.entries()].sort(([a], [b]) => a.localeCompare(b));
+  els.routeLegend.innerHTML = '';
+  els.routeList.innerHTML = '';
+
+  if (!sortedRoutes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No active routes';
+    els.routeList.appendChild(empty);
+    return;
+  }
+
+  sortedRoutes.forEach(([route, count]) => {
+    const chip = document.createElement('div');
+    chip.className = 'legend-chip';
+    chip.innerHTML = `<span class="legend-swatch" style="background:${routeColor(route)}"></span><span>${route}</span>`;
+    els.routeLegend.appendChild(chip);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'route-pill';
+    const selected = state.activeRouteFilter === route;
+    if (selected) {
+      button.classList.add('selected');
+      button.style.color = routeColor(route);
+      button.style.borderColor = routeColor(route);
+    }
+    button.innerHTML = `<span class="route-name">${route}</span><span class="route-count">${count}</span>`;
+    button.addEventListener('click', () => {
+      state.activeRouteFilter = state.activeRouteFilter === route ? null : route;
+      renderRouteList(state.latestMatches);
+      applyRouteFilter();
+    });
+    els.routeList.appendChild(button);
   });
+}
 
-  el.trackBtn.addEventListener('click', ()=>{ runOnce(); });
+function applyRouteFilter() {
+  const unfiltered = state.latestMatches.slice();
+  const matches = state.activeRouteFilter
+    ? unfiltered.filter((match) => match.route === state.activeRouteFilter)
+    : unfiltered;
+  updateMap(matches);
+}
 
-  el.auto.addEventListener('change', ()=>{
-    if(el.auto.checked) startAuto(); else stopAuto();
+function clearMarkersNotIn(ids) {
+  Object.keys(state.markers).forEach((id) => {
+    if (!ids.has(id)) {
+      state.map.removeLayer(state.markers[id]);
+      delete state.markers[id];
+    }
   });
-
-  // load saved key into field (masked)
-  const saved = loadKeyFromStorage();
-  if(saved) el.apiKey.value = saved;
 }
 
-function buildFeedUrl(key){
-  if(!key) throw new Error('No API key provided');
-  return `https://gtfsrt.prod.obanyc.com/vehiclePositions?key=${encodeURIComponent(key)}`;
-}
-
-async function fetchFeed(key){
-  const url = buildFeedUrl(key);
-  const resp = await fetch(url);
-  if(!resp.ok) throw new Error(`Feed fetch failed: ${resp.status}`);
-  const buf = await resp.arrayBuffer();
-  return new Uint8Array(buf);
-}
-
-async function parseFeed(bytes){
-  const root = await rootPromise;
-  const FeedMessage = root.lookupType('transit_realtime.FeedMessage');
-  const decoded = FeedMessage.decode(bytes);
-  const obj = FeedMessage.toObject(decoded, { longs: Number, enums: String, defaults: false, arrays: true, objects: true });
-  return obj;
-}
-
-function clearMarkersNotIn(ids){
-  for(const id in markers){ if(!ids.has(id)){ map.removeLayer(markers[id]); delete markers[id]; } }
-}
-
-function updateMarkers(matches){
+function updateMap(matches) {
   const present = new Set();
-  matches.forEach(m=>{
-    if(m.lat == null || m.lon == null) return;
-    present.add(m.id);
-    if(!markers[m.id]) markers[m.id] = L.marker([m.lat,m.lon]).addTo(map);
-    else markers[m.id].setLatLng([m.lat,m.lon]);
 
-    markers[m.id].bindPopup(`<b>Vehicle ${m.id}</b><br/>Route: ${m.route||'N/A'}<br/>Trip: ${m.trip||'N/A'}<br/>Updated: ${m.timestamp?new Date(m.timestamp*1000).toLocaleTimeString():'N/A'}`);
+  matches.forEach((match) => {
+    if (match.lat == null || match.lon == null) return;
+    present.add(match.id);
+
+    const color = match.route ? routeColor(match.route) : '#6b7280';
+
+    if (!state.markers[match.id]) {
+      const marker = L.circleMarker([match.lat, match.lon], {
+        radius: 8,
+        color,
+        fillColor: color,
+        fillOpacity: 0.9,
+        weight: 2
+      }).addTo(state.map);
+      state.markers[match.id] = marker;
+    } else {
+      state.markers[match.id].setLatLng([match.lat, match.lon]);
+      state.markers[match.id].setStyle({ color, fillColor: color });
+    }
+
+    state.markers[match.id].bindPopup(
+      `<b>Vehicle ${match.id}</b><br />` +
+      `Route: ${match.route || 'N/A'}<br />` +
+      `Trip: ${match.trip || 'N/A'}<br />` +
+      `Updated: ${match.timestamp ? new Date(match.timestamp * 1000).toLocaleTimeString() : 'N/A'}`
+    );
   });
+
   clearMarkersNotIn(present);
 }
 
-async function runOnce(){
-  setError('');
-  setStatus('Fetching feed...');
-  const key = getApiKey();
-  if(!key){ setError('Missing API key. Enter it above or save it.'); setStatus('No API key'); return; }
+async function fetchFeed(key) {
+  const response = await fetch(`https://gtfsrt.prod.obanyc.com/vehiclePositions?key=${encodeURIComponent(key)}`);
+  if (!response.ok) {
+    throw new Error(`Feed fetch failed: ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
 
-  try{
-    const bytes = await fetchFeed(key);
-    const feedObj = await parseFeed(bytes);
+async function parseFeed(bytes) {
+  if (!state.rootPromise) {
+    throw new Error('Proto not loaded');
+  }
 
-    const mode = el.mode.value;
-    const q = el.query.value.trim();
-    const userVehicles = mode === 'vehicle' ? q.split(',').map(x=>x.trim()).filter(x=>x.length>0) : null;
+  const root = await state.rootPromise;
+  const FeedMessage = root.lookupType('transit_realtime.FeedMessage');
+  const decoded = FeedMessage.decode(bytes);
+  return FeedMessage.toObject(decoded, {
+    longs: Number,
+    enums: String,
+    defaults: false,
+    arrays: true,
+    objects: true
+  });
+}
 
-    const matches = [];
-    if(feedObj && Array.isArray(feedObj.entity)){
-      feedObj.entity.forEach(ent => {
-        const v = ent.vehicle || ent.vehicle_position || ent.vehiclePosition || ent.vehicle || null;
-        // support both shapes: ent.vehicle.vehicle.id or ent.vehicle.vehicle.label
-        if(!ent.vehicle) return;
-        const veh = ent.vehicle.vehicle || ent.vehicle.vehicle || ent.vehicle;
-        const id = ent.vehicle?.vehicle?.id || ent.vehicle?.vehicle?.label || ent.id || (veh && veh.id) || null;
-        const lat = ent.vehicle?.position?.latitude ?? ent.vehicle?.position?.lat ?? null;
-        const lon = ent.vehicle?.position?.longitude ?? ent.vehicle?.position?.lon ?? null;
-        const route = ent.vehicle?.trip?.routeId || ent.vehicle?.trip?.route || null;
-        const trip = ent.vehicle?.trip?.tripId || ent.vehicle?.trip?.trip || null;
-        const timestamp = ent.vehicle?.timestamp || ent.vehicle?.current_stop_sequence || null;
+function normalizeMatches(feedObj, mode, userInput) {
+  if (!feedObj || !Array.isArray(feedObj.entity)) return [];
 
-        if(!id) return;
+  const userVehicles = mode === 'vehicle'
+    ? userInput.split(',').map((v) => v.trim()).filter(Boolean)
+    : [];
 
-        if(mode === 'vehicle'){
-          if(userVehicles && userVehicles.includes(String(id))) matches.push({id:String(id),lat,lon,route,trip,timestamp});
-        }else{
-          // route mode: match by route id (case-insensitive)
-          if(q && route && String(route).toLowerCase() === q.toLowerCase()) matches.push({id:String(id),lat,lon,route,trip,timestamp});
-        }
-      });
+  const matches = [];
+
+  feedObj.entity.forEach((entity) => {
+    if (!entity || !entity.vehicle || !entity.vehicle.vehicle) return;
+
+    const vehicle = entity.vehicle;
+    const id = vehicle.vehicle.id;
+    if (!id) return;
+
+    const route = vehicle.trip && (vehicle.trip.routeId || vehicle.trip.route);
+    const trip = vehicle.trip && (vehicle.trip.tripId || vehicle.trip.trip);
+    const lat = vehicle.position && (vehicle.position.latitude ?? vehicle.position.lat ?? null);
+    const lon = vehicle.position && (vehicle.position.longitude ?? vehicle.position.lon ?? null);
+    const timestamp = vehicle.timestamp || null;
+
+    if (mode === 'vehicle') {
+      if (!userVehicles.includes(String(id))) return;
+    } else {
+      const routeInput = userInput.trim();
+      if (!routeInput || !route || String(route).toLowerCase() !== routeInput.toLowerCase()) return;
     }
 
-    updateMarkers(matches);
-    setStatus(`Found ${matches.length} matching vehicle(s)`);
-    setLast(Date.now());
-  }catch(err){
-    console.error(err);
-    setError(err.message);
+    matches.push({
+      id: String(id),
+      lat,
+      lon,
+      route: route ? String(route) : null,
+      trip: trip ? String(trip) : null,
+      timestamp
+    });
+  });
+
+  return matches;
+}
+
+async function runOnce() {
+  setError('');
+  setStatus('Fetching feed...');
+
+  const key = getApiKey();
+  if (!key) {
+    setError('Missing API key. Add one above or save it.');
+    setStatus('No API key');
+    return;
+  }
+
+  try {
+    const bytes = await fetchFeed(key);
+    const feedObj = await parseFeed(bytes);
+    const matches = normalizeMatches(feedObj, els.mode.value, els.query.value);
+
+    state.latestMatches = matches;
+    renderRouteList(matches);
+    applyRouteFilter();
+
+    const countText = matches.length === 1 ? '1 match' : `${matches.length} matches`;
+    setStatus(`${countText} found`);
+    els.last.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    console.error(error);
+    setError(error.message || 'Unknown error');
     setStatus('Error');
   }
 }
 
-function startAuto(){
-  if(intervalId) return;
+function startAutoRefresh() {
+  if (state.intervalId) return;
   runOnce();
-  intervalId = setInterval(runOnce, DEFAULT_REFRESH_MS);
-  setStatus('Auto-refresh started');
+  state.intervalId = setInterval(runOnce, DEFAULT_REFRESH_MS);
 }
-function stopAuto(){ if(intervalId){ clearInterval(intervalId); intervalId = null; setStatus('Auto-refresh stopped'); } }
 
-function setLast(ts){ document.getElementById('last').textContent = ts ? `Last update: ${new Date(ts).toLocaleTimeString()}` : 'Last update: never'; }
+function stopAutoRefresh() {
+  if (state.intervalId) {
+    clearInterval(state.intervalId);
+    state.intervalId = null;
+  }
+}
 
-// initialize app on DOM ready
-window.addEventListener('DOMContentLoaded', ()=>{ init(); });
+function init() {
+  initLeafletMap();
+
+  const savedKey = localStorage.getItem('gtfs_rt_key') || '';
+  if (savedKey) {
+    els.apiKey.value = savedKey;
+  }
+
+  state.rootPromise = loadProto().catch((error) => {
+    setError(error.message);
+    setStatus('Proto load failed');
+    throw error;
+  });
+
+  updateModeLabel();
+  els.mode.addEventListener('change', updateModeLabel);
+  els.saveKey.addEventListener('click', saveKeyToLocalStorage);
+  els.clearKey.addEventListener('click', clearSavedKey);
+  els.trackBtn.addEventListener('click', runOnce);
+  els.clearRouteFilter.addEventListener('click', () => {
+    state.activeRouteFilter = null;
+    renderRouteList(state.latestMatches);
+    applyRouteFilter();
+  });
+
+  els.auto.addEventListener('change', () => {
+    if (els.auto.checked) {
+      startAutoRefresh();
+    } else {
+      stopAutoRefresh();
+    }
+  });
+
+  state.rootPromise.then(() => {
+    setStatus('Ready');
+  }).catch(() => {
+    // handled above
+  });
+}
+
+window.addEventListener('DOMContentLoaded', init);

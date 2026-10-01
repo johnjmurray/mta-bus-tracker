@@ -1,65 +1,73 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>MTA Bus Tracker</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <title>MTA Bus Tracker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="card controls-card">
+          <h1>MTA Bus Tracker</h1>
+          <p class="subtitle">Live NYC bus tracking for GitHub Pages</p>
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body>
-  <header>
-    <h1>MTA Bus Tracker</h1>
-    <p class="lead">Track NYC buses using MTA GTFS-RT vehicle positions. Enter a GTFS-RT API key, then search by vehicle ID(s) or route.</p>
-  </header>
+          <div class="field">
+            <label for="apiKey">GTFS-RT API key</label>
+            <input id="apiKey" type="password" placeholder="Enter key" />
+          </div>
 
-  <main>
-    <section id="controls">
-      <div class="row">
-        <label for="apiKey">GTFS-RT API Key</label>
-        <input id="apiKey" type="password" placeholder="Enter GTFS-RT key (or leave blank to use saved)" />
-        <button id="saveKey">Save key</button>
-        <button id="clearKey">Clear saved key</button>
-      </div>
+          <div class="button-row">
+            <button id="saveKey" class="primary">Save key</button>
+            <button id="clearKey">Clear</button>
+          </div>
 
-      <div class="row">
-        <label for="mode">Search mode</label>
-        <select id="mode">
-          <option value="vehicle">Vehicle IDs (comma separated)</option>
-          <option value="route">Route ID</option>
-        </select>
+          <div class="field">
+            <label for="mode">Search mode</label>
+            <select id="mode">
+              <option value="vehicle">Vehicle IDs</option>
+              <option value="route">Route ID</option>
+            </select>
+          </div>
 
-        <label for="query">Vehicle IDs or Route</label>
-        <input id="query" placeholder="e.g. 7560,4321 or B41" />
+          <div class="field">
+            <label id="queryLabel" for="query">Vehicle IDs</label>
+            <input id="query" type="text" placeholder="e.g. 7560, 4321 or B41" />
+          </div>
 
-        <button id="track">Track</button>
+          <div class="button-row mobile-row">
+            <button id="track" class="primary">Track</button>
+            <label class="checkbox-wrap">
+              <input id="auto" type="checkbox" />
+              <span>Auto-refresh</span>
+            </label>
+          </div>
+        </div>
 
-        <label class="inline"><input id="auto" type="checkbox" /> Auto-refresh (20s)</label>
-      </div>
+        <div class="card routes-card">
+          <div class="panel-header">
+            <h2>Routes</h2>
+            <button id="clearRouteFilter" class="small">Clear filter</button>
+          </div>
+          <div id="routeLegend" class="route-legend"></div>
+          <div id="routeList" class="route-list"></div>
+        </div>
+      </aside>
 
-      <div class="row meta">
-        <div id="status">Ready</div>
-        <div id="last">Last update: never</div>
-      </div>
+      <main class="map-container card">
+        <div class="map-toolbar">
+          <div id="status" class="status-pill">Ready</div>
+          <div id="last" class="last-update">Last update: never</div>
+        </div>
+        <div id="error" class="error" aria-live="assertive"></div>
+        <div id="map"></div>
+      </main>
+    </div>
 
-      <div id="error" role="alert" aria-live="assertive"></div>
-    </section>
-
-    <section id="map-wrap">
-      <div id="map"></div>
-    </section>
-  </main>
-
-  <footer>
-    <small>Note: Serve this app over HTTP(S). Fetching GTFS-RT feeds and the proto file won't work from file://</small>
-  </footer>
-
-  <!-- Libraries -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/protobufjs/dist/protobuf.min.js"></script>
-
-  <!-- App -->
-  <script type="module" src="app.js"></script>
-</body>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/protobufjs/dist/protobuf.min.js"></script>
+    <script src="app.js"></script>
+  </body>
 </html>
