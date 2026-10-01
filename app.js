@@ -7,7 +7,8 @@ const state = {
   intervalId: null,
   activeRouteFilter: null,
   latestMatches: [],
-  routeColorCache: new Map()
+  routeColorCache: new Map(),
+  routeShapes: {}
 };
 
 const els = {
@@ -75,7 +76,83 @@ function updateModeLabel() {
 
 function initLeafletMap() {
   state.map = L.map('map', { preferCanvas: true }).setView([40.7128, -74.006], 12);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(state.map);
+  L.tileLayer('https://tile.openstreetmap.org/styles/osm-bright-gray/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(state.map);
+}
+
+function clearRouteShapes(route) {
+  if (state.routeShapes[route]) {
+    state.routeShapes[route].forEach((layer) => {
+      state.map.removeLayer(layer);
+    });
+    delete state.routeShapes[route];
+  }
+}
+
+function clearAllRouteShapes() {
+  Object.keys(state.routeShapes).forEach((route) => {
+    clearRouteShapes(route);
+  });
+}
+
+async function fetchRouteShape(route, key) {
+  try {
+    const url = new URL('https://bustime-classic.mta.info/api/siri/stop-monitoring.json');
+    url.searchParams.set('key', key);
+    url.searchParams.set('LineRef', route);
+    url.searchParams.set('PreviewInterval', 'PT1H');
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching route shape:', error);
+    return null;
+  }
+}
+
+function drawRouteShape(route, payload) {
+  if (!payload?.Siri?.ServiceDelivery?.StopMonitoringDelivery) {
+    return;
+  }
+
+  const delivery = payload.Siri.ServiceDelivery.StopMonitoringDelivery[0];
+  if (!delivery?.MonitoredStopVisit) {
+    return;
+  }
+
+  const stops = delivery.MonitoredStopVisit
+    .map((visit) => {
+      const location = visit.MonitoredVehicleJourney?.VehicleLocation;
+      if (!location) return null;
+      const lat = location.Latitude ?? location.latitude;
+      const lon = location.Longitude ?? location.longitude;
+      return lat && lon ? [lat, lon] : null;
+    })
+    .filter(Boolean);
+
+  if (stops.length < 2) {
+    return;
+  }
+
+  const polyline = L.polyline(stops, {
+    color: routeColor(route),
+    weight: 3,
+    opacity: 0.5,
+    dashArray: '5, 5'
+  }).addTo(state.map);
+
+  if (!state.routeShapes[route]) {
+    state.routeShapes[route] = [];
+  }
+  state.routeShapes[route].push(polyline);
 }
 
 function renderRouteList(matches) {
@@ -114,9 +191,20 @@ function renderRouteList(matches) {
       button.style.borderColor = routeColor(route);
     }
     button.innerHTML = `<span class="route-name">${route}</span><span class="route-count">${count}</span>`;
-    button.addEventListener('click', () => {
+    button.addEventListener('click', async () => {
       state.activeRouteFilter = state.activeRouteFilter === route ? null : route;
       renderRouteList(state.latestMatches);
+      
+      if (state.activeRouteFilter === route) {
+        const key = getApiKey();
+        const shapePayload = await fetchRouteShape(route, key);
+        if (shapePayload) {
+          drawRouteShape(route, shapePayload);
+        }
+      } else {
+        clearRouteShapes(route);
+      }
+      
       applyRouteFilter();
     });
     els.routeList.appendChild(button);
@@ -291,6 +379,10 @@ async function runOnce() {
     const payloads = await fetchVehicleMonitoring(key, els.mode.value, els.query.value);
     const matches = normalizeMatches(payloads, els.mode.value, els.query.value);
 
+    if (matches.length === 0 && els.mode.value === 'vehicle') {
+      setError('Bus not on a revenue trip');
+    }
+
     state.latestMatches = matches;
     renderRouteList(matches);
     applyRouteFilter();
@@ -335,6 +427,7 @@ function init() {
   els.trackBtn.addEventListener('click', runOnce);
   els.clearRouteFilter.addEventListener('click', () => {
     state.activeRouteFilter = null;
+    clearAllRouteShapes();
     renderRouteList(state.latestMatches);
     applyRouteFilter();
   });
