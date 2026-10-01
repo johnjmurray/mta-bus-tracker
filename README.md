@@ -1,4 +1,5 @@
 # MTA Bus Tracker
+Note: The code in this repository was written by AI and checked by me.
 
 This repository is a small webapp to track MTA buses using the GTFS-RT vehicle positions feed.
 
