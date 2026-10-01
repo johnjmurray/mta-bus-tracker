@@ -76,7 +76,10 @@ function updateModeLabel() {
 
 function initLeafletMap() {
   state.map = L.map('map', { preferCanvas: true }).setView([40.7128, -74.006], 12);
-  L.tileLayer('https://tile.openstreetmap.org/styles/osm-bright-gray/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(state.map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(state.map);
 }
 
 function clearRouteShapes(route) {
