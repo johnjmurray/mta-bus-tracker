@@ -1,4 +1,4 @@
-const DEFAULT_KEY = 'Bus_Infrastructure_Mapping';
+const DEFAULT_KEY = 'autoactiontech';
 const DEFAULT_REFRESH_MS = 20000;
 
 const state = {
