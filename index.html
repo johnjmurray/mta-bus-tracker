@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <title>NYC Bus Tracker</title>
 
-  https://unpkg.com/leaflet@1.9.4/dist/leaflet.css
-  https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <style>
     body { font-family: sans-serif; }
@@ -16,15 +16,15 @@
 
 <h1>MTA Bus Tracker</h1>
 
-<label>Vehicle IDs (comma separated):</label>
+<label for="veh">Vehicle IDs (comma separated):</label>
 <input id="veh" placeholder="Example: 7560, 4321, 8884" size="40" />
-<button onclick="track()">Track</button>
+<button type="button" onclick="track()">Track</button>
 
 <label><input type="checkbox" id="auto" /> Auto-refresh every 20s</label>
 
 <div id="map"></div>
 
-app.js
+<script src="app.js"></script>
 
 </body>
 </html>
