@@ -261,7 +261,9 @@ function normalizeMatches(feedResponses, mode, userInput) {
     const timestamp = entry.RecordedAtTime ? new Date(entry.RecordedAtTime).getTime() / 1000 : null;
 
     if (mode === 'vehicle') {
-      if (!userVehicles.includes(String(id))) return;
+      // Extract numeric part from vehicle ID (e.g., "MTABC_5386" -> "5386")
+      const numericId = String(id).split('_').pop();
+      if (!userVehicles.includes(numericId)) return;
     } else {
       const routeInput = userInput.trim();
       if (!routeInput || !route || String(route).toLowerCase() !== routeInput.toLowerCase()) return;
