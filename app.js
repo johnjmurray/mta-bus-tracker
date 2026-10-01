@@ -8,7 +8,8 @@ const state = {
   activeRouteFilter: null,
   latestMatches: [],
   routeColorCache: new Map(),
-  routeShapes: {}
+  routeShapes: {},
+  userLocationMarker: null
 };
 
 const els = {
@@ -80,6 +81,40 @@ function initLeafletMap() {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(state.map);
+}
+
+function addUserLocationMarker(lat, lon) {
+  if (state.userLocationMarker) {
+    state.userLocationMarker.setLatLng([lat, lon]);
+  } else {
+    state.userLocationMarker = L.circleMarker([lat, lon], {
+      radius: 10,
+      color: '#2563eb',
+      fillColor: '#3b82f6',
+      fillOpacity: 0.7,
+      weight: 3,
+      dashArray: '5, 5'
+    }).addTo(state.map);
+    state.userLocationMarker.bindPopup('Your location');
+  }
+  state.map.setView([lat, lon], 13);
+}
+
+function requestUserLocation() {
+  if (!navigator.geolocation) {
+    console.warn('Geolocation not supported');
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const { latitude, longitude } = position.coords;
+      addUserLocationMarker(latitude, longitude);
+    },
+    (error) => {
+      console.warn('Could not get user location:', error.message);
+    }
+  );
 }
 
 function clearRouteShapes(route) {
@@ -415,6 +450,7 @@ function stopAutoRefresh() {
 
 function init() {
   initLeafletMap();
+  requestUserLocation();
 
   const savedKey = localStorage.getItem('gtfs_rt_key') || '';
   if (savedKey) {
