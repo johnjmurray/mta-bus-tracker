@@ -76,9 +76,9 @@ function updateModeLabel() {
 
 function initLeafletMap() {
   state.map = L.map('map', { preferCanvas: true }).setView([40.7128, -74.006], 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/transport/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20,
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
   }).addTo(state.map);
 }
 
