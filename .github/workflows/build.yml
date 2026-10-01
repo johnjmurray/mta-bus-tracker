@@ -1,0 +1,39 @@
+name: Build Webapp
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Create JS config with secret
+        run: |
+          echo "export const GTFS_RT_KEY = '${GTFS_RT_KEY}';" > config.js
+        env:
+          GTFS_RT_KEY: ${{ secrets.GTFS_RT_KEY }}
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v2
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v2
