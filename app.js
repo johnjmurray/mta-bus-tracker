@@ -94,6 +94,9 @@ async function track() {
   updateMap(matches);
 }
 
+// Expose track to the global scope so inline onclick handlers work
+window.track = track;
+
 setInterval(() => {
   if (document.getElementById("auto").checked) track();
 }, 20000);
